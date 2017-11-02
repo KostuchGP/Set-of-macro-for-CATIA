@@ -1,0 +1,502 @@
+Imports INFITF
+Imports System.Collections.ObjectModel
+Imports ProductStructureTypeLib
+Imports MECMOD
+Imports HybridShapeTypeLib
+Imports Microsoft.Office.Interop
+
+
+Module Module1
+    Public CATIA As Object
+    'zmienne globalne
+
+    Const PI = 3.141592653589
+
+    ' Excel obiekty
+    Public gXL As Excel.Application
+    Public gWksSheet As Excel.Worksheet
+
+    Dim File
+    Dim XYZList(3)
+    Dim YPRList(3)
+
+    Dim XAxis(2) 'As Double
+    Dim YAxis(2) 'As Double
+    Dim ZAxis(2) 'As Double
+
+    Dim axisCollection As New Microsoft.VisualBasic.Collection
+    Dim axisNamesCollection As New Microsoft.VisualBasic.Collection
+
+    '//---------------------------------------------------------------------------
+    '// MAIN
+    '//---------------------------------------------------------------------------
+    Sub Main()
+
+        CATIA = GetObject(, "CATIA.Application")
+
+        CATIA.RefreshDisplay = False
+        CATIA.DisplayFileAlerts = False
+
+        'pozamykaj wszystkie pliki
+        'Dim iDoc As Integer
+        If CATIA.Documents.Count > 0 Then
+            CATIA.Documents.Item(1).Close()
+        End If
+
+        'otworz plik excel ze wspolrzednymi
+
+        Dim excelFile As String
+        excelFile = CATIA.FileSelectionBox("Wybierz plik excelowy", "*.xlsx", INFITF.CatFileSelectionMode.CatFileSelectionModeOpen)
+
+        If excelFile = "" Then Exit Sub
+
+        'otwarcie i aktywacja pliku excelowego
+        Call activateExcel(excelFile)
+
+        Dim iName As Integer
+
+        For iName = 1 To Len(excelFile)
+            If InStr(1, Right(excelFile, iName), "\") > 0 Then
+                Exit For
+            End If
+        Next
+
+        'nazwa pliku
+        Dim productName As String
+        productName = Left(Right(excelFile, iName - 1), iName - 6)
+
+        'sciezka zapisu
+        Dim pathFile As String
+        pathFile = Left(excelFile, Len(excelFile) - iName) + "\"
+
+        Dim mainProduct As ProductDocument
+        mainProduct = CATIA.Documents.Add("Product")
+
+        MsgBox("jest nowy produkt?", vbYesNo)
+
+        mainProduct.Product.PartNumber = productName
+
+        CATIA.ActiveDocument.SaveAs(pathFile + productName + ".CATProduct")
+
+        'tworzenie Axisow i kulek
+        createAxis(productName, pathFile)
+
+        'wstawienie parta do produktu
+        Dim dProducts
+        dProducts = mainProduct.Product.Products
+        Dim aParts(0)
+        aParts(0) = pathFile + productName + "_Axis" + ".CATPart"
+        dProducts.AddComponentsFromFiles(aParts, "All")
+
+        'tworzenie komponentow i pozycjonowanie gunow
+        createComponents(pathFile)
+
+        'tworzenie constrainow
+        createConstrains()
+
+        'wysrodkowanie
+        CATIA.ActiveWindow.ActiveViewer.Reframe()
+        CATIA.ActiveWindow.ActiveViewer.ZoomIn()
+
+        ' zamkniecie pliku excelowego
+        Call desactivateExcel(File)
+
+        'CATIA.StartCommand "Update"
+        Dim iCollection As Integer
+        For iCollection = axisCollection.Count To 1 Step -1
+            axisCollection.Remove(iCollection)
+            axisNamesCollection.Remove(iCollection)
+        Next
+
+        CATIA.ActiveDocument.Save()
+
+        CATIA.RefreshDisplay = True
+        CATIA.DisplayFileAlerts = True
+
+        MsgBox("Thanks for K.Leśniewski Team")
+
+    End Sub
+    '//---------------------------------------------------------------------------
+    '// otwarcie i aktywacja pliku excelowego
+    '//---------------------------------------------------------------------------
+    Sub activateExcel(ByVal sFileName)
+
+        gXL = CreateObject("Excel.Application")
+        gXL.Workbooks.Open(sFileName)
+        gXL.DisplayAlerts = False
+        gXL.Visible = False
+        gWksSheet = gXL.ActiveSheet
+
+    End Sub
+    '//---------------------------------------------------------------------------
+    '// zamkniecie pliku excelowego
+    '//---------------------------------------------------------------------------
+    Sub desactivateExcel(ByVal sFileName)
+
+        gXL.Workbooks.Close()
+
+    End Sub
+    '//---------------------------------------------------------------------------
+    '// tworzenie Axisow i kulek
+    '//---------------------------------------------------------------------------
+    Sub createAxis(ByVal sFileName, ByVal sPath)
+
+        Dim iRow As Integer
+
+        CATIA.RefreshDisplay = False
+        CATIA.DisplayFileAlerts = False
+
+        'tworz nowego parta
+        Dim oPartDoc As Document
+        oPartDoc = CATIA.Documents.Add("Part")
+
+        Dim oPart As Part
+        oPart = oPartDoc.Part
+
+        oPartDoc.Product.PartNumber = sFileName + "_Axis"
+
+        Dim oAxisSystems As AxisSystems
+        oAxisSystems = oPart.AxisSystems
+
+        Dim axisSystem1 As AxisSystem, daxisSystem1
+
+        Dim oHB As HybridBody
+
+        iRow = 2
+
+        '--------------------------------------------
+        '----------- PETLA AXISY -------------------
+
+        '
+        While gWksSheet.Cells(iRow, 1).Value <> ""
+
+            If gWksSheet.Cells(iRow, 2).Formula = " " Or gWksSheet.Cells(iRow, 2).Formula = "" Then
+                oHB = oPart.HybridBodies.Add()
+                oHB.Name = gWksSheet.Cells(iRow, 8).Value
+                oPart.Update()
+                GoTo nextRow
+            End If
+
+            On Error Resume Next
+
+            XAxis(0) = 0
+            XAxis(1) = 0
+            XAxis(2) = 0
+
+            YAxis(0) = 0
+            YAxis(1) = 0
+            YAxis(2) = 0
+
+            ZAxis(0) = 0
+            ZAxis(1) = 0
+            ZAxis(2) = 0
+
+            axisSystem1 = oAxisSystems.Add()
+            daxisSystem1 = axisSystem1
+
+            axisSystem1.Name = gWksSheet.Cells(iRow, 1).Value
+            axisSystem1.IsCurrent = True
+
+            XYZList(0) = CDbl(gWksSheet.Cells(iRow, 2).Value)
+            XYZList(1) = CDbl(gWksSheet.Cells(iRow, 3).Value)
+            XYZList(2) = CDbl(gWksSheet.Cells(iRow, 4).Value)
+
+            YPRList(0) = CDbl(gWksSheet.Cells(iRow, 5).Value * PI / 180)
+            YPRList(1) = CDbl(gWksSheet.Cells(iRow, 6).Value * PI / 180)
+            YPRList(2) = CDbl(gWksSheet.Cells(iRow, 7).Value * PI / 180)
+
+            Call FromYPRToCATMath(XYZList, YPRList)
+
+            daxisSystem1.PutOrigin(XYZList)
+            daxisSystem1.PutXAxis(XAxis)
+            daxisSystem1.PutYAxis(YAxis)
+            daxisSystem1.PutZAxis(ZAxis)
+
+            oPart.UpdateObject(axisSystem1)
+            axisSystem1.IsCurrent = True
+            oPart.Update()
+
+            axisCollection.Add(axisSystem1)
+            axisNamesCollection.Add(axisSystem1.Name)
+
+nextRow:
+            iRow = iRow + 1
+
+        End While
+
+        '--------------------------------------------
+        '------KONIEC PETLA AXISY ------------------
+
+        '--------------------------------------------
+        '----------- PETLA SFERY-------------------
+
+        Dim newSphere As HybridShapeSphere
+
+        oHB = oPart.HybridBodies.Add()
+        oHB.Name = "Spheres"
+
+        oPart.Update()
+
+        Dim reference1 As Reference, reference2 As Reference
+
+
+
+        Dim sSel As Selection
+        sSel = CATIA.ActiveDocument.Selection
+        sSel.Clear()
+
+        Dim iAxis As Integer
+
+        For iAxis = 1 To axisCollection.Count
+
+            'tworzenie nowej sfery
+            axisSystem1 = axisCollection.Item(iAxis)
+
+            reference2 = oPart.CreateReferenceFromObject(axisSystem1)
+            newSphere = oPart.HybridShapeFactory.AddNewSphere(reference2, reference1, 10.0#, 0.0#, 0.0#, 0.0#, 180.0#)
+
+            newSphere.Limitation = 1
+
+            newSphere.Name = axisSystem1.Name
+
+            oHB.AppendHybridShape(newSphere)
+
+            oPart.Update()
+
+            sSel.Clear()
+            sSel.Add(newSphere)
+
+            sSel.VisProperties.SetRealColor(0, 127, 255, 1)
+            sSel.VisProperties.SetRealOpacity(200, 1)
+
+            oPart.Update()
+        Next
+
+        '--------------------------------------------
+        '------KONIEC PETLA SFERY ------------------
+
+        CATIA.ActiveDocument.SaveAs(sPath + sFileName + "_Axis" + ".CATPart")
+        CATIA.ActiveDocument.Close()
+
+    End Sub
+    '//---------------------------------------------------------------------------
+    '// tworzenie komponenow i pozycjonowanie gunow
+    '//---------------------------------------------------------------------------
+    Sub createComponents(ByVal sPath)
+
+        CATIA.RefreshDisplay = False
+        CATIA.DisplayFileAlerts = False
+
+        Dim oPart As Part
+        oPart = CATIA.Documents.Item(2).Part
+
+        Dim oComponent 'As Product
+        Dim oHBs As HybridBodies
+        oHBs = oPart.HybridBodies
+
+        Dim gunName As String
+        Dim gunCount As Integer
+
+        Dim wspolrzedne(2)
+        Dim osX(2)
+        Dim osY(2)
+        Dim osZ(2)
+
+        Dim sSel As Selection
+        sSel = CATIA.ActiveDocument.Selection
+
+        Dim aWsp(11)
+
+        Dim move1 As Move
+
+        Dim sCGR
+        Dim sAXIS As AxisSystem, dsAXIS
+
+        Dim iHB As Integer
+        Dim iRow As Integer : iRow = 3
+        Dim iGun As Integer
+        Dim iGunPop As Integer : iGunPop = 0
+
+        Dim recznyName As String = "r3x10028x02et1"
+
+        For iHB = 1 To oHBs.Count - 1
+
+            gunName = oHBs.Item(iHB).Name
+
+            oComponent = CATIA.ActiveDocument.Product.Products.AddNewProduct(gunName)
+            ' oComponent = CATIA.ActiveDocument.Product.Products.AddNewProduct(recznyName)
+            oComponent.PartNumber = oComponent.PartNumber + "_"
+
+            gunCount = 0
+            Do While (gWksSheet.Cells(iRow, 2).Formula <> " " And gWksSheet.Cells(iRow, 2).Formula <> "")
+                gunCount = gunCount + 1
+                iRow = iRow + 1
+            Loop
+            iRow = iRow + 1
+
+            'wstawianie cgr do komponentow
+
+            Dim aGuns(100)
+
+            For iGun = 0 To gunCount - 1
+                aGuns(iGun) = sPath + gunName + ".cgr"
+            Next
+
+            oComponent.Products.AddComponentsFromFiles(aGuns, "All")
+
+            If Err.Number <> 0 Then
+                'MsgBox("Please insert " + gunName + ".cgr" + " into folder")
+                Err.Clear()
+            End If
+            'przesuniecie cgr do wspolrzednych
+
+            On Error GoTo 0
+            For iGun = 1 To gunCount
+
+                sSel.Clear()
+                sSel.Search("Name=" + axisNamesCollection.Item(iGunPop + iGun) + ",all")
+                sAXIS = sSel.Item(1).Value
+                sSel.Clear()
+
+                sCGR = oComponent.Products.Item(iGun)
+
+                dsAXIS = sAXIS
+
+                dsAXIS.GetOrigin(wspolrzedne)
+                dsAXIS.GetXAxis(osX)
+                dsAXIS.GetYAxis(osY)
+                dsAXIS.GetZAxis(osZ)
+
+                move1 = sCGR.Move
+                move1 = move1.MovableObject
+
+                aWsp(0) = osX(0)
+                aWsp(1) = osX(1)
+                aWsp(2) = osX(2)
+                aWsp(3) = osY(0)
+                aWsp(4) = osY(1)
+                aWsp(5) = osY(2)
+                aWsp(6) = osZ(0)
+                aWsp(7) = osZ(1)
+                aWsp(8) = osZ(2)
+                aWsp(9) = wspolrzedne(0)
+                aWsp(10) = wspolrzedne(1)
+                aWsp(11) = wspolrzedne(2)
+
+
+                move1.Apply(aWsp)
+            Next
+
+            For iGun = 0 To gunCount - 1
+                aGuns(iGun) = Nothing
+            Next
+
+            iGunPop = iGunPop + gunCount
+        Next
+
+
+    End Sub
+
+    '//---------------------------------------------------------------------------
+    '// tworzenie constrainow
+    '//---------------------------------------------------------------------------
+    Sub createConstrains()
+
+        Dim oProductDocument As ProductDocument
+        oProductDocument = CATIA.ActiveDocument
+
+        Dim oProduct As Product
+        Dim oComp
+        Dim oConstraint As Constraint
+        Dim oConstraints As Constraints
+        Dim oReference As Reference
+        Dim prodName As String
+        Dim refName As String
+
+        Dim sSel As Selection
+        sSel = CATIA.ActiveDocument.Selection
+
+        Dim iComp As Integer
+
+        'constrainy dla glownego wezla
+        oProduct = oProductDocument.Product
+        oConstraints = oProduct.Connections("CATIAConstraints")
+
+        For iComp = 1 To oProductDocument.Product.Products.Count
+
+            prodName = oProductDocument.Product.Products.Item(iComp).Name
+            refName = prodName + "/" + prodName + "_Axis.1/!" + prodName + "/" + prodName + "_Axis.1/"
+
+            oReference = oProduct.CreateReferenceFromName(refName)
+            oConstraint = oConstraints.AddMonoEltCst(MECMOD.CatConstraintType.catCstTypeReference, oReference)
+            oConstraint.ReferenceType = MECMOD.CatConstraintRefType.catCstRefTypeFixInSpace
+        Next
+
+        'constrainy dla komponentow
+        Dim iGun As Integer
+
+        For iComp = 2 To oProductDocument.Product.Products.Count
+
+            prodName = oProductDocument.Product.Products.Item(iComp).PartNumber
+
+            oProduct = oProductDocument.GetItem(prodName)
+            oConstraints = oProduct.Connections("CATIAConstraints")
+
+            For iGun = 1 To oProduct.Products.Count
+
+                refName = prodName + "/" + Left(prodName, Len(prodName) - 1) + "." + CStr(iGun) + "/!" + prodName + "/" + Left(prodName, Len(prodName) - 1) + "." + CStr(iGun) + "/"
+
+                oReference = oProduct.CreateReferenceFromName(refName)
+                oConstraint = oConstraints.AddMonoEltCst(MECMOD.CatConstraintType.catCstTypeReference, oReference)
+                oConstraint.ReferenceType = MECMOD.CatConstraintRefType.catCstRefTypeFixInSpace
+            Next
+        Next
+
+        'chowanie constrainow
+        sSel.Clear()
+
+        sSel.Search("Name=Fix*, all")
+
+        sSel.VisProperties.SetShow(INFITF.CatVisPropertyShow.catVisPropertyNoShowAttr)
+
+        sSel.Clear()
+
+    End Sub
+    '-----------------------------------------------------------------------------
+    ' FromYPRToCATMath
+    ''-----------------------------------------------------------------------------
+    Sub FromYPRToCATMath(ByVal XYZList, ByVal YPRList)
+
+        Dim xx, yy, zz, roll, pitch, yaw As Double
+        Dim c_roll, c_pitch, c_yaw, s_roll, s_pitch, s_yaw As Double
+
+        xx = XYZList(0)
+        yy = XYZList(1)
+        zz = XYZList(2)
+
+        yaw = YPRList(0)
+        pitch = YPRList(1)
+        roll = YPRList(2)
+
+        c_roll = Math.Cos(roll)
+        c_pitch = Math.Cos(pitch)
+        c_yaw = Math.Cos(yaw)
+        s_roll = Math.Sin(roll)
+        s_pitch = Math.Sin(pitch)
+        s_yaw = Math.Sin(yaw)
+
+        XAxis(0) = c_roll * c_pitch
+        XAxis(1) = s_roll * c_pitch
+        XAxis(2) = -s_pitch
+
+        YAxis(0) = (c_roll * s_pitch * s_yaw) - (s_roll * c_yaw)
+        YAxis(1) = (s_roll * s_pitch * s_yaw) + (c_roll * c_yaw)
+        YAxis(2) = c_pitch * s_yaw
+
+        ZAxis(0) = (c_roll * s_pitch * c_yaw) + (s_roll * s_yaw)
+        ZAxis(1) = (s_roll * s_pitch * c_yaw) - (c_roll * s_yaw)
+        ZAxis(2) = c_pitch * c_yaw
+
+    End Sub
+
+End Module
